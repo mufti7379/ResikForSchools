@@ -1,20 +1,21 @@
 // ============================================================================
 // Resik For Schooling — Admin Dashboard
-// Firebase Realtime Database (REST via modular SDK) + rendering logic
+// Cloud Firestore + Firebase Auth (Google Sign-In) + rendering logic
 // ============================================================================
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
 
 import {
-  getDatabase,
-  ref,
-  get,
-  child,
-  update,
-  push,
-  set,
-  remove,
-} from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
+  getFirestore,
+  doc,
+  collection,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  writeBatch,
+} from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
 
 import {
   getAuth,
@@ -36,17 +37,15 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+const db = getFirestore(app);
 const auth = getAuth(app);
 
 // ============================================================================
 // Auth — login admin pakai Google Sign-In, dibatasi ke email yang terdaftar
-// di node RTDB `admin_emails` (diatur langsung dari Firebase console / RTDB,
-// tanpa perlu ubah kode untuk nambah/hapus admin).
+// di koleksi Firestore `admin_emails` (diatur langsung dari Firebase console / Firestore).
 // ============================================================================
 
-// Kunci RTDB tidak boleh mengandung '.', jadi '.' diganti ',' saat dipakai
-// sebagai key. Rules di server melakukan replace yang sama.
+// Sanitasi email untuk backward compatibility jika key lama masih tersimpan
 function sanitizeEmailKey(email) {
   return email.trim().toLowerCase().replace(/\./g, ",");
 }
@@ -72,9 +71,21 @@ function setAuthNote(msg) {
 }
 
 async function isEmailAllowedAsAdmin(email) {
-  const key = sanitizeEmailKey(email);
-  const snap = await get(child(ref(db), `admin_emails/${key}`));
-  return snap.exists() && snap.val() === true;
+  const cleanEmail = email.trim().toLowerCase();
+  // 1. Cek langsung dengan ID email (standard Firestore)
+  let snap = await getDoc(doc(db, "admin_emails", cleanEmail));
+  if (snap.exists()) {
+    const data = snap.data();
+    return data === true || data.allowed !== false;
+  }
+  // 2. Fallback jika ID dokumen menggunakan sanitasi "." -> "," (dari RTDB)
+  const sanitized = sanitizeEmailKey(cleanEmail);
+  snap = await getDoc(doc(db, "admin_emails", sanitized));
+  if (snap.exists()) {
+    const data = snap.data();
+    return data === true || data.allowed !== false;
+  }
+  return false;
 }
 
 authGoogleBtn.addEventListener("click", async () => {
@@ -204,63 +215,83 @@ function last30Days() {
 // ============================================================================
 
 async function fetchAllUsers() {
-  const snap = await get(child(ref(db), "users"));
-
-  return snap.exists() ? snap.val() : {};
+  try {
+    const snap = await getDocs(collection(db, "users"));
+    const users = {};
+    snap.forEach((docSnap) => {
+      users[docSnap.id] = docSnap.data();
+    });
+    return users;
+  } catch (err) {
+    console.error("Gagal mengambil data users:", err);
+    return {};
+  }
 }
 
 async function fetchAllTransactions() {
-  const snap = await get(child(ref(db), "transactions"));
-
-  return snap.exists() ? snap.val() : {};
+  try {
+    const snap = await getDocs(collection(db, "transactions"));
+    const byUser = {};
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      const uid = data.uid || "unknown";
+      if (!byUser[uid]) byUser[uid] = {};
+      byUser[uid][docSnap.id] = data;
+    });
+    return byUser;
+  } catch (err) {
+    console.error("Gagal mengambil data transactions:", err);
+    return {};
+  }
 }
 
 async function fetchAllWasteOut() {
   try {
-    const snap = await get(child(ref(db), "waste_out"));
-    return snap.exists() ? snap.val() : {};
+    const snap = await getDocs(collection(db, "waste_out"));
+    const waste = {};
+    snap.forEach((docSnap) => {
+      waste[docSnap.id] = docSnap.data();
+    });
+    return waste;
   } catch (err) {
-    // Node waste_out bisa belum punya permission di Firebase Rules.
-    // Jangan biarkan kegagalan node opsional ini membuat seluruh dashboard kosong.
     console.warn("Pengeluaran sampah belum bisa dibaca:", err);
     return {};
   }
 }
 
 async function fetchKategori() {
-  const snap = await get(child(ref(db), "kategori"));
+  try {
+    const snap = await getDocs(collection(db, "kategori"));
 
-  if (!snap.exists()) {
-    const seeded = {};
+    if (snap.empty) {
+      const batch = writeBatch(db);
+      const seeded = [];
 
-    DEFAULT_KATEGORI.forEach((k) => {
-      const newKey = push(ref(db, "kategori")).key;
+      DEFAULT_KATEGORI.forEach((k) => {
+        const newDocRef = doc(collection(db, "kategori"));
+        batch.set(newDocRef, k);
+        seeded.push({
+          key: newDocRef.id,
+          ...k,
+        });
+      });
 
-      if (newKey) {
-        seeded[newKey] = k;
-      }
+      await batch.commit();
+      return seeded;
+    }
+
+    const list = [];
+    snap.forEach((docSnap) => {
+      list.push({
+        key: docSnap.id,
+        ...docSnap.data(),
+      });
     });
-
-    await update(
-      ref(db),
-      Object.fromEntries(
-        Object.entries(seeded).map(([key, val]) => [
-          `kategori/${key}`,
-          val,
-        ]),
-      ),
-    );
-
-    return Object.entries(seeded).map(([key, val]) => ({
-      key,
-      ...val,
-    }));
+    return list;
+  } catch (err) {
+    console.error("Gagal mengambil data kategori:", err);
+    return DEFAULT_KATEGORI.map((k, idx) => ({ key: `def_${idx}`, ...k }));
   }
-
-  return Object.entries(snap.val()).map(([key, val]) => ({
-    key,
-    ...val,
-  }));
 }
 
 // ============================================================================
@@ -936,10 +967,8 @@ document
       // Kalau email diisi, pastikan belum dipakai nasabah lain (satu
       // akun Google cuma boleh nge-link ke satu kartu nasabah).
       if (email) {
-        const emailKey = sanitizeEmailKey(email);
-        const existing = await get(
-          child(ref(db), `email_to_uid/${emailKey}`),
-        );
+        const cleanEmail = email.trim().toLowerCase();
+        const existing = await getDoc(doc(db, "email_to_uid", cleanEmail));
         if (existing.exists()) {
           errorEl.textContent =
             "Email ini sudah dipakai nasabah lain.";
@@ -948,33 +977,23 @@ document
         }
       }
 
-      const newUid =
-        push(ref(db, "users")).key;
+      const userDocRef = doc(collection(db, "users"));
+      const newUid = userDocRef.id;
 
-      if (!newUid) {
-        errorEl.textContent =
-          "Gagal membuat UID nasabah.";
-
-        errorEl.classList.add(
-          "field-error",
-        );
-
-        return;
-      }
-
-      const updates = {};
-      updates[`users/${newUid}`] = {
+      const batch = writeBatch(db);
+      batch.set(userDocRef, {
         nama,
         tipe,
         kelas: kelas || "-",
         email: email || null,
         saldo_terakhir: 0,
-      };
+        createdAt: new Date().toISOString(),
+      });
       if (email) {
-        updates[`email_to_uid/${sanitizeEmailKey(email)}`] = newUid;
+        batch.set(doc(db, "email_to_uid", email), { uid: newUid });
       }
 
-      await update(ref(db), updates);
+      await batch.commit();
 
       // Tampilkan QR
 
@@ -1055,20 +1074,24 @@ document.getElementById("tableNasabah")?.addEventListener("click", async (e) => 
     if (!nama.trim()) { alert("Nama wajib diisi."); return; }
     const cleanEmail = email.trim().toLowerCase();
     if (cleanEmail && cleanEmail !== (user.email || "").toLowerCase()) {
-      const exists = await get(child(ref(db), `email_to_uid/${sanitizeEmailKey(cleanEmail)}`));
-      if (exists.exists() && exists.val() !== uid) { alert("Email sudah dipakai nasabah lain."); return; }
+      const exists = await getDoc(doc(db, "email_to_uid", cleanEmail));
+      if (exists.exists() && exists.data()?.uid !== uid) { alert("Email sudah dipakai nasabah lain."); return; }
     }
-    const updates = {};
-    updates[`users/${uid}/nama`] = nama.trim();
-    updates[`users/${uid}/tipe`] = tipe.trim() || "Siswa";
-    updates[`users/${uid}/kelas`] = kelas.trim() || "-";
-    updates[`users/${uid}/email`] = cleanEmail || null;
+    const batch = writeBatch(db);
+    batch.update(doc(db, "users", uid), {
+      nama: nama.trim(),
+      tipe: tipe.trim() || "Siswa",
+      kelas: kelas.trim() || "-",
+      email: cleanEmail || null,
+    });
     if (user.email && user.email.toLowerCase() !== cleanEmail) {
-      updates[`email_to_uid/${sanitizeEmailKey(user.email)}`] = null;
+      batch.delete(doc(db, "email_to_uid", user.email.trim().toLowerCase()));
     }
-    if (cleanEmail) updates[`email_to_uid/${sanitizeEmailKey(cleanEmail)}`] = uid;
+    if (cleanEmail) {
+      batch.set(doc(db, "email_to_uid", cleanEmail), { uid });
+    }
     try {
-      await update(ref(db), updates);
+      await batch.commit();
       await loadDashboard();
       renderNasabahTable(cache.users);
     } catch (err) { console.error(err); alert("Gagal mengedit nasabah."); }
@@ -1077,10 +1100,18 @@ document.getElementById("tableNasabah")?.addEventListener("click", async (e) => 
 
   if (deleteBtn) {
     if (!confirm(`Hapus nasabah "${user.nama}" beserta seluruh riwayat transaksinya?`)) return;
-    const updates = { [`users/${uid}`]: null, [`transactions/${uid}`]: null };
-    if (user.email) updates[`email_to_uid/${sanitizeEmailKey(user.email)}`] = null;
     try {
-      await update(ref(db), updates);
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "users", uid));
+      if (user.email) {
+        batch.delete(doc(db, "email_to_uid", user.email.trim().toLowerCase()));
+      }
+      if (cache.transactions && cache.transactions[uid]) {
+        Object.keys(cache.transactions[uid]).forEach((txId) => {
+          batch.delete(doc(db, "transactions", txId));
+        });
+      }
+      await batch.commit();
       await loadDashboard();
       renderNasabahTable(cache.users);
     } catch (err) { console.error(err); alert("Gagal menghapus nasabah."); }
@@ -1168,30 +1199,20 @@ async function tambahKategori(
   nama,
   harga,
 ) {
-  const newKey =
-    push(ref(db, "kategori")).key;
-
-  if (!newKey) {
-    throw new Error(
-      "Gagal membuat key kategori.",
-    );
-  }
-
-  await set(
-    ref(db, `kategori/${newKey}`),
-    {
-      nama,
-      harga,
-    },
-  );
+  const newDocRef = doc(collection(db, "kategori"));
+  await setDoc(newDocRef, {
+    nama,
+    harga,
+  });
 }
 
 async function simpanKategori(key, nama, harga) {
   const old = cache.kategori.find((k) => k.key === key);
-  const updates = {
-    [`kategori/${key}/nama`]: nama,
-    [`kategori/${key}/harga`]: harga,
-  };
+  const batch = writeBatch(db);
+  batch.update(doc(db, "kategori", key), {
+    nama,
+    harga,
+  });
 
   // Saat nama kategori diubah, ikut migrasikan nama kategori pada transaksi
   // lama supaya riwayat dan analitik tetap nyambung ke kategori yang sama.
@@ -1200,22 +1221,28 @@ async function simpanKategori(key, nama, harga) {
       .filter((tx) => tx.tipe === "Setor")
       .forEach((tx) => {
         if (Array.isArray(tx.items)) {
-          tx.items.forEach((item, index) => {
+          let hasChange = false;
+          const updatedItems = tx.items.map((item) => {
             if (item.kategori === old.nama) {
-              updates[`transactions/${tx.uid}/${tx.txId}/items/${index}/kategori`] = nama;
+              hasChange = true;
+              return { ...item, kategori: nama };
             }
+            return item;
           });
-        } else if (tx.kategori === old.nama) {
-          updates[`transactions/${tx.uid}/${tx.txId}/kategori`] = nama;
+          if (hasChange && tx.txId) {
+            batch.update(doc(db, "transactions", tx.txId), { items: updatedItems });
+          }
+        } else if (tx.kategori === old.nama && tx.txId) {
+          batch.update(doc(db, "transactions", tx.txId), { kategori: nama });
         }
       });
   }
 
-  await update(ref(db), updates);
+  await batch.commit();
 }
 
 async function hapusKategori(key) {
-  await remove(ref(db, `kategori/${key}`));
+  await deleteDoc(doc(db, "kategori", key));
 }
 
 document
@@ -2128,8 +2155,7 @@ function initWasteOutForm() {
     if (btn) btn.disabled = true;
 
     try {
-      const key = push(ref(db, "waste_out")).key;
-      if (!key) throw new Error("Gagal membuat key pengeluaran sampah.");
+      const newDocRef = doc(collection(db, "waste_out"));
 
       const txn = {
         tipe: "Pengeluaran Sampah",
@@ -2142,7 +2168,7 @@ function initWasteOutForm() {
         admin_pencatat: "Admin Sekolah",
       };
 
-      await update(ref(db), { [`waste_out/${key}`]: txn });
+      await setDoc(newDocRef, txn);
 
       alert("Pengeluaran sampah berhasil dicatat!");
       if (wasteOutReceiverEl) wasteOutReceiverEl.value = "";
@@ -2235,14 +2261,14 @@ function applyScanJenisPreset() {
 
 async function cariNasabah(uid) {
   try {
-    const snapshot = await get(child(ref(db), `users/${uid}`));
+    const snapshot = await getDoc(doc(db, "users", uid));
     if (!snapshot.exists()) {
       alert("Nasabah tidak ditemukan!");
       return;
     }
 
     currentUID = uid;
-    currentNasabahData = snapshot.val();
+    currentNasabahData = snapshot.data();
     txtNama.textContent = `${currentNasabahData.nama} (${currentNasabahData.kelas || ""})`;
     txtSaldo.textContent = formatRp(currentNasabahData.saldo_terakhir || 0);
     divProfil.classList.remove("is-hidden", "hidden");
@@ -2434,34 +2460,19 @@ document
       }
 
       try {
-        const newTxnKey =
-          push(
-            child(
-              ref(db),
-              `transactions/${currentUID}`,
-            ),
-          ).key;
+        const txDocRef = doc(collection(db, "transactions"));
+        const batch = writeBatch(db);
 
-        if (!newTxnKey) {
-          throw new Error(
-            "Gagal membuat key transaksi.",
-          );
-        }
+        batch.set(txDocRef, {
+          ...txnData,
+          uid: currentUID,
+        });
 
-        const updates = {};
+        batch.update(doc(db, "users", currentUID), {
+          saldo_terakhir: saldoBaru,
+        });
 
-        updates[
-          `users/${currentUID}/saldo_terakhir`
-        ] = saldoBaru;
-
-        updates[
-          `transactions/${currentUID}/${newTxnKey}`
-        ] = txnData;
-
-        await update(
-          ref(db),
-          updates,
-        );
+        await batch.commit();
 
         alert(
           "Transaksi berhasil dicatat!",
