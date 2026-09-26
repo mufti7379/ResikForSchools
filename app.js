@@ -25,19 +25,28 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
 
+
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBRuCNCG24CAwdOJNPSTKXvtRWRL1qIPL8",
-  authDomain: "ResikForSchools.firebaseapp.com",
-  databaseURL:
-    "https://ResikForSchools-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "ResikForSchools",
-  storageBucket: "ResikForSchool.firebasestorage.app",
-  messagingSenderId: "306920049631",
-  appId: "1:306920049631:web:2f8e35b8051a8f6b01d26a",
+  apiKey: "AIzaSyDjQ9-MMfrOJSJI-VX9iYTJq6z9IG-2H4s",
+  authDomain: "resikforschools-3f71e.firebaseapp.com",
+  projectId: "resikforschools-3f71e",
+  storageBucket: "resikforschools-3f71e.firebasestorage.app",
+  messagingSenderId: "1097080715154",
+  appId: "1:1097080715154:web:c7fd23bfebf1d09a3a734b",
+  measurementId: "G-SDGGG6BKJ4"
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const analytics = getAnalytics(app);
 const auth = getAuth(app);
 
 // ============================================================================
