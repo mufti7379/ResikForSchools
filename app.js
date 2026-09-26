@@ -27,11 +27,11 @@ import {
 
 const firebaseConfig = {
   apiKey: "AIzaSyBRuCNCG24CAwdOJNPSTKXvtRWRL1qIPL8",
-  authDomain: "banksampahtp2xetos.firebaseapp.com",
+  authDomain: "ResikForSchools.firebaseapp.com",
   databaseURL:
-    "https://banksampahtp2xetos-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "banksampahtp2xetos",
-  storageBucket: "banksampahtp2xetos.firebasestorage.app",
+    "https://ResikForSchools-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "ResikForSchools",
+  storageBucket: "ResikForSchool.firebasestorage.app",
   messagingSenderId: "306920049631",
   appId: "1:306920049631:web:2f8e35b8051a8f6b01d26a",
 };
